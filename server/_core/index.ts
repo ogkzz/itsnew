@@ -7,6 +7,10 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { initWebSocket } from "../websocket";
+import { runFullAnalysis } from "../detection";
+import * as db from "../db";
+import { emitNewAnalysis, emitStatsUpdate } from "../websocket";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -30,9 +34,106 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+
+  // Initialize WebSocket
+  initWebSocket(server);
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+  // Rate limiting map
+  const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT = 60;
+  const RATE_WINDOW = 60 * 1000;
+
+  function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = rateLimitMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
+      return true;
+    }
+    if (entry.count >= RATE_LIMIT) return false;
+    entry.count++;
+    return true;
+  }
+
+  // REST API endpoints
+  app.post("/api/analyze", async (req, res) => {
+    try {
+      const clientIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0] || req.socket.remoteAddress || "unknown";
+      if (!checkRateLimit(clientIp)) {
+        return res.status(429).json({ error: "Rate limit exceeded" });
+      }
+      const { ip, headers: customHeaders, userAgent, domain, requestBody, hmacSignature, timestamp, nonce } = req.body;
+      const targetIp = ip || clientIp;
+      const targetHeaders = customHeaders || Object.fromEntries(
+        Object.entries(req.headers).map(([k, v]) => [k, String(v)])
+      );
+      const targetUa = userAgent || req.headers["user-agent"] || "";
+
+      const blacklist = await db.getBlacklistedDomains();
+      const result = runFullAnalysis(
+        { ip: targetIp, headers: targetHeaders, userAgent: targetUa, domain, requestBody, hmacSignature, timestamp, nonce },
+        blacklist
+      );
+
+      const analysisId = await db.createAnalysis({
+        sourceIp: targetIp,
+        userAgent: targetUa,
+        headers: targetHeaders,
+        proxyVpnScore: result.proxyVpnScore,
+        domainScore: result.domainScore,
+        fingerprintScore: result.fingerprintScore,
+        jailbreakScore: result.jailbreakScore,
+        manipulationScore: result.manipulationScore,
+        totalScore: result.totalScore,
+        status: result.status,
+        detections: result.detections,
+        asnInfo: result.asnInfo,
+        geoInfo: result.geoInfo,
+        fingerprintId: result.fingerprintId,
+        step: "completed",
+      });
+
+      await db.upsertFingerprint({
+        fingerprintHash: result.fingerprintId,
+        sourceIp: targetIp,
+        userAgent: targetUa,
+        suspicious: result.totalScore > 30 ? 1 : 0,
+      });
+
+      emitNewAnalysis({ id: analysisId, ...result, sourceIp: targetIp, createdAt: new Date() });
+      const stats = await db.getAnalysisStats();
+      emitStatsUpdate(stats);
+
+      res.json({ id: analysisId, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/status", async (_req, res) => {
+    try {
+      const stats = await db.getAnalysisStats();
+      res.json({ status: "online", ...stats });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/logs", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+      const logsList = await db.getLogs(limit, offset);
+      res.json(logsList);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   // tRPC API
