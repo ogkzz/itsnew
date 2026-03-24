@@ -43,6 +43,7 @@ export const analyses = mysqlTable("analyses", {
   fingerprintId: varchar("fingerprintId", { length: 128 }),
   // Step tracking
   step: mysqlEnum("step", ["collecting", "verifying", "completed"]).default("collecting").notNull(),
+  username: varchar("username", { length: 128 }).default("free").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -60,6 +61,7 @@ export const logs = mysqlTable("logs", {
   details: json("details"),
   sourceIp: varchar("sourceIp", { length: 45 }),
   userId: int("userId"),
+  username: varchar("username", { length: 128 }).default("free").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

@@ -38,37 +38,43 @@ export const appRouter = router({
           type: "access",
           level: "info",
           message: `Login successful for user: ${input.username}`,
+          username: input.username,
         });
         return { success: true, token: "authenticated" };
       }),
   }),
 
-  // ==================== DASHBOARD ====================
+  // ==================== DASHBOARD (filtered by username) ====================
   dashboard: router({
-    stats: publicProcedure.query(async () => {
-      const stats = await db.getAnalysisStats();
-      const totalAnalyses = await db.getAnalysisCount();
-      const totalLogs = await db.getLogCount();
-      const exposedCount = await db.getExposedCount();
-      const detectionTypes = await db.getDetectionTypeStats();
-      return { ...stats, totalAnalyses, totalLogs, exposedCount, detectionTypes };
-    }),
-    recentAnalyses: publicProcedure.query(async () => {
-      return db.getRecentAnalyses(10);
-    }),
+    stats: publicProcedure
+      .input(z.object({ username: z.string() }))
+      .query(async ({ input }) => {
+        const stats = await db.getAnalysisStats(input.username);
+        const totalAnalyses = await db.getAnalysisCount(input.username);
+        const totalLogs = await db.getLogCount(input.username);
+        const exposedCount = await db.getExposedCount();
+        const detectionTypes = await db.getDetectionTypeStats(input.username);
+        return { ...stats, totalAnalyses, totalLogs, exposedCount, detectionTypes };
+      }),
+    recentAnalyses: publicProcedure
+      .input(z.object({ username: z.string() }))
+      .query(async ({ input }) => {
+        return db.getRecentAnalyses(input.username, 10);
+      }),
   }),
 
-  // ==================== ANALYSES ====================
+  // ==================== ANALYSES (filtered by username) ====================
   analysis: router({
     list: publicProcedure
       .input(z.object({
+        username: z.string(),
         limit: z.number().min(1).max(100).default(50),
         offset: z.number().min(0).default(0),
         status: z.string().optional(),
-      }).optional())
+      }))
       .query(async ({ input }) => {
-        const { limit = 50, offset = 0, status } = input || {};
-        return db.getAnalyses(limit, offset, status);
+        const { username, limit, offset, status } = input;
+        return db.getAnalyses(username, limit, offset, status);
       }),
 
     getById: publicProcedure
@@ -80,6 +86,7 @@ export const appRouter = router({
     run: publicProcedure
       .input(z.object({
         ip: z.string(),
+        username: z.string(),
         headers: z.record(z.string(), z.string()).optional(),
         userAgent: z.string().optional(),
         domain: z.string().optional(),
@@ -113,7 +120,7 @@ export const appRouter = router({
           }))
         );
 
-        // Save analysis
+        // Save analysis with username
         const analysisId = await db.createAnalysis({
           sourceIp: input.ip,
           userAgent: input.userAgent || null,
@@ -130,6 +137,7 @@ export const appRouter = router({
           geoInfo: result.geoInfo,
           fingerprintId: result.fingerprintId,
           step: "completed",
+          username: input.username,
         });
 
         // Update fingerprint
@@ -141,46 +149,50 @@ export const appRouter = router({
           suspicious: result.totalScore > 30 ? 1 : 0,
         });
 
-        // Log the analysis
+        // Log the analysis with username
         await db.createLog({
           type: "analysis",
           level: result.status === "confirmed" ? "error" : result.status === "suspicious" ? "warn" : "info",
           message: `Analysis completed: IP ${input.ip} - Score: ${result.totalScore} (${result.status})`,
           sourceIp: input.ip,
           details: { analysisId, totalScore: result.totalScore, status: result.status },
+          username: input.username,
         });
 
         // Emit WebSocket events
-        const analysisData = { id: analysisId, ...result, sourceIp: input.ip, createdAt: new Date() };
+        const analysisData = { id: analysisId, ...result, sourceIp: input.ip, createdAt: new Date(), username: input.username };
         emitNewAnalysis(analysisData);
 
-        const stats = await db.getAnalysisStats();
+        const stats = await db.getAnalysisStats(input.username);
         emitStatsUpdate(stats);
 
         return { id: analysisId, ...result };
       }),
 
-    stats: publicProcedure.query(async () => {
-      return db.getAnalysisStats();
-    }),
+    stats: publicProcedure
+      .input(z.object({ username: z.string() }))
+      .query(async ({ input }) => {
+        return db.getAnalysisStats(input.username);
+      }),
   }),
 
-  // ==================== LOGS ====================
+  // ==================== LOGS (filtered by username) ====================
   logs: router({
     list: publicProcedure
       .input(z.object({
+        username: z.string(),
         limit: z.number().min(1).max(100).default(50),
         offset: z.number().min(0).default(0),
         type: z.string().optional(),
         level: z.string().optional(),
-      }).optional())
+      }))
       .query(async ({ input }) => {
-        const { limit = 50, offset = 0, type, level } = input || {};
-        return db.getLogs(limit, offset, type, level);
+        const { username, limit, offset, type, level } = input;
+        return db.getLogs(username, limit, offset, type, level);
       }),
   }),
 
-  // ==================== EXPOSED ====================
+  // ==================== EXPOSED (public - no username filter) ====================
   exposed: router({
     list: publicProcedure
       .input(z.object({
@@ -201,14 +213,17 @@ export const appRouter = router({
         photo: z.string().optional(),
         description: z.string().optional(),
         status: z.enum(["active", "banned", "under_review", "cleared"]).default("active"),
+        username: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        const id = await db.createExposed(input);
+        const { username, ...exposedData } = input;
+        const id = await db.createExposed(exposedData);
         await db.createLog({
           type: "system",
           level: "info",
           message: `Exposed entry created: ${input.nameId}`,
           details: { exposedId: id },
+          username: username || "system",
         });
         return { id };
       }),

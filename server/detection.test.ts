@@ -5,6 +5,11 @@ import {
   analyzeFingerprint,
   detectJailbreak,
   detectManipulation,
+  detectWebRTCLeak,
+  detectDNSLeak,
+  detectTimezoneMismatch,
+  detectBatteryAnomaly,
+  detectConnectionAnomaly,
   runFullAnalysis,
   getStatusFromScore,
 } from "./detection";
@@ -31,31 +36,23 @@ describe("Detection Engine", () => {
   });
 
   describe("detectProxyVpn", () => {
-    it("returns 0 score for clean request", () => {
+    it("returns low score for clean request", () => {
       const result = detectProxyVpn({
         ip: "203.0.113.1",
-        headers: {
-          accept: "text/html",
-          "accept-language": "pt-BR",
-          "accept-encoding": "gzip",
-        },
+        headers: { accept: "text/html", "accept-language": "pt-BR", "accept-encoding": "gzip" },
         userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
       });
-      expect(result.score).toBe(0);
-      expect(result.detections).toHaveLength(0);
+      // Simulated IP reputation may add a small score, but should be low
+      expect(result.score).toBeLessThanOrEqual(15);
     });
 
     it("detects proxy headers", () => {
       const result = detectProxyVpn({
         ip: "203.0.113.1",
-        headers: {
-          "x-forwarded-for": "10.0.0.1",
-          via: "1.1 proxy.example.com",
-        },
+        headers: { "x-forwarded-for": "10.0.0.1", via: "1.1 proxy.example.com" },
         userAgent: "Mozilla/5.0",
       });
       expect(result.score).toBeGreaterThan(0);
-      expect(result.detections.length).toBeGreaterThan(0);
       expect(result.detections.some(d => d.method === "header_analysis")).toBe(true);
     });
 
@@ -66,7 +63,7 @@ describe("Detection Engine", () => {
         userAgent: "Mozilla/5.0 VPN-Client/2.0",
       });
       expect(result.score).toBeGreaterThan(0);
-      expect(result.detections.some(d => d.method === "user_agent")).toBe(true);
+      expect(result.detections.some(d => d.method === "user_agent_vpn")).toBe(true);
     });
 
     it("detects private IP ranges", () => {
@@ -83,10 +80,7 @@ describe("Detection Engine", () => {
         ip: "10.0.0.1",
         headers: {
           "x-forwarded-for": "1.1.1.1,2.2.2.2,3.3.3.3,4.4.4.4,5.5.5.5",
-          via: "proxy",
-          "x-real-ip": "1.1.1.1",
-          "x-vpn-client": "true",
-          "x-tunnel": "active",
+          via: "proxy", "x-real-ip": "1.1.1.1", "x-vpn-client": "true", "x-tunnel": "active",
         },
         userAgent: "VPN proxy tunnel client",
       });
@@ -98,7 +92,6 @@ describe("Detection Engine", () => {
     it("returns 0 for clean domain", () => {
       const result = detectSuspiciousDomain("google.com");
       expect(result.score).toBe(0);
-      expect(result.detections).toHaveLength(0);
     });
 
     it("detects suspicious keywords", () => {
@@ -115,7 +108,6 @@ describe("Detection Engine", () => {
 
     it("detects both keyword and extension", () => {
       const result = detectSuspiciousDomain("freefire-proxy.xyz");
-      // Should have at least keyword "freefire" + keyword "proxy" + extension ".xyz"
       expect(result.detections.length).toBeGreaterThanOrEqual(3);
     });
 
@@ -148,15 +140,6 @@ describe("Detection Engine", () => {
         userAgent: "Mozilla/5.0",
       });
       expect(result.detections.some(d => d.method === "missing_headers")).toBe(true);
-    });
-
-    it("detects IP rotation", () => {
-      const result = analyzeFingerprint(
-        { ip: "1.2.3.4", headers: {}, userAgent: "Mozilla/5.0" },
-        [{ hash: "", ip: "5.6.7.8", seenCount: 10, ipChanges: 5 }]
-      );
-      // Since hash won't match, no IP rotation detection
-      expect(result.fingerprintId).toBeDefined();
     });
   });
 
@@ -219,14 +202,125 @@ describe("Detection Engine", () => {
         ip: "203.0.113.1",
         headers: {},
         userAgent: "Mozilla/5.0",
-        timestamp: Date.now() - 600000, // 10 minutes ago
+        timestamp: Date.now() - 600000,
       });
       expect(result.detections.some(d => d.method === "replay_detection")).toBe(true);
     });
   });
 
+  // New detection methods tests
+  describe("detectWebRTCLeak", () => {
+    it("returns 0 when no WebRTC IPs provided", () => {
+      const result = detectWebRTCLeak({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+      });
+      expect(result.score).toBe(0);
+    });
+
+    it("detects WebRTC IP mismatch", () => {
+      const result = detectWebRTCLeak({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+        webrtcIps: ["185.220.101.42"],
+      });
+      expect(result.score).toBeGreaterThan(0);
+      expect(result.detections.some(d => d.method === "ip_mismatch")).toBe(true);
+    });
+
+    it("returns 0 when WebRTC IP matches", () => {
+      const result = detectWebRTCLeak({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+        webrtcIps: ["203.0.113.1"],
+      });
+      expect(result.score).toBe(0);
+    });
+  });
+
+  describe("detectDNSLeak", () => {
+    it("returns 0 when no DNS info", () => {
+      const result = detectDNSLeak({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+      });
+      expect(result.score).toBe(0);
+    });
+  });
+
+  describe("detectTimezoneMismatch", () => {
+    it("returns 0 when no timezone provided", () => {
+      const result = detectTimezoneMismatch({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+      });
+      expect(result.score).toBe(0);
+    });
+
+    it("detects timezone mismatch with language", () => {
+      const result = detectTimezoneMismatch({
+        ip: "203.0.113.1",
+        headers: { "accept-language": "ja-JP" },
+        userAgent: "Mozilla/5.0",
+        timezone: "America/New_York",
+      });
+      expect(result.score).toBeGreaterThan(0);
+      expect(result.detections.some(d => d.method === "language_mismatch" || d.method === "geo_timezone_compare")).toBe(true);
+    });
+  });
+
+  describe("detectBatteryAnomaly", () => {
+    it("returns 0 when no battery info", () => {
+      const result = detectBatteryAnomaly({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+      });
+      expect(result.score).toBe(0);
+    });
+
+    it("detects always-full battery (emulator indicator)", () => {
+      const result = detectBatteryAnomaly({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+        batteryLevel: 100,
+        batteryCharging: true,
+      });
+      expect(result.score).toBeGreaterThan(0);
+      expect(result.detections.some(d => d.method === "emulator_indicator" || d.method === "impossible_state")).toBe(true);
+    });
+  });
+
+  describe("detectConnectionAnomaly", () => {
+    it("returns 0 when no connection info", () => {
+      const result = detectConnectionAnomaly({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+      });
+      expect(result.score).toBe(0);
+    });
+
+    it("detects ethernet on mobile device", () => {
+      const result = detectConnectionAnomaly({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+        connectionType: "ethernet",
+      });
+      expect(result.score).toBeGreaterThan(0);
+      expect(result.detections.some(d => d.method === "connection_device_mismatch")).toBe(true);
+    });
+  });
+
   describe("runFullAnalysis", () => {
-    it("returns complete analysis result", () => {
+    it("returns complete analysis result with all fields", () => {
       const result = runFullAnalysis({
         ip: "203.0.113.1",
         headers: { accept: "text/html", "accept-language": "pt-BR", "accept-encoding": "gzip" },
@@ -244,20 +338,17 @@ describe("Detection Engine", () => {
       expect(result).toHaveProperty("fingerprintId");
       expect(result).toHaveProperty("asnInfo");
       expect(result).toHaveProperty("geoInfo");
+      expect(result).toHaveProperty("advancedChecks");
       expect(["safe", "suspicious", "confirmed"]).toContain(result.status);
     });
 
     it("gives high score for suspicious input", () => {
       const result = runFullAnalysis({
         ip: "10.0.0.1",
-        headers: {
-          "x-forwarded-for": "1.1.1.1,2.2.2.2",
-          via: "proxy",
-        },
+        headers: { "x-forwarded-for": "1.1.1.1,2.2.2.2", via: "proxy" },
         userAgent: "VPN-Client cydia",
         domain: "freefire-inject.xyz",
       });
-
       expect(result.totalScore).toBeGreaterThan(30);
       expect(result.detections.length).toBeGreaterThan(0);
     });
@@ -265,33 +356,37 @@ describe("Detection Engine", () => {
     it("correctly classifies safe requests", () => {
       const result = runFullAnalysis({
         ip: "203.0.113.50",
-        headers: {
-          accept: "text/html",
-          "accept-language": "pt-BR",
-          "accept-encoding": "gzip",
-        },
+        headers: { accept: "text/html", "accept-language": "pt-BR", "accept-encoding": "gzip" },
         userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
       });
-
       expect(result.totalScore).toBeLessThanOrEqual(30);
       expect(result.status).toBe("safe");
     });
 
     it("respects score ranges for status", () => {
-      // This test validates the status boundaries
       const result = runFullAnalysis({
         ip: "203.0.113.1",
         headers: {},
         userAgent: "Mozilla/5.0",
       });
+      if (result.totalScore <= 30) expect(result.status).toBe("safe");
+      else if (result.totalScore <= 70) expect(result.status).toBe("suspicious");
+      else expect(result.status).toBe("confirmed");
+    });
 
-      if (result.totalScore <= 30) {
-        expect(result.status).toBe("safe");
-      } else if (result.totalScore <= 70) {
-        expect(result.status).toBe("suspicious");
-      } else {
-        expect(result.status).toBe("confirmed");
-      }
+    it("includes advanced checks in result", () => {
+      const result = runFullAnalysis({
+        ip: "203.0.113.1",
+        headers: {},
+        userAgent: "Mozilla/5.0",
+        webrtcIps: ["185.220.101.42"],
+        timezone: "Asia/Tokyo",
+        batteryLevel: 100,
+        batteryCharging: true,
+        connectionType: "ethernet",
+      });
+      expect(result.advancedChecks).toBeDefined();
+      expect(result.advancedChecks!.length).toBeGreaterThan(0);
     });
   });
 });

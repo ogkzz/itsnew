@@ -42,6 +42,16 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Security headers
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    next();
+  });
+
   // Rate limiting map
   const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
   const RATE_LIMIT = 60;
@@ -95,6 +105,7 @@ async function startServer() {
         geoInfo: result.geoInfo,
         fingerprintId: result.fingerprintId,
         step: "completed",
+        username: req.body.username || "api",
       });
 
       await db.upsertFingerprint({
@@ -105,7 +116,8 @@ async function startServer() {
       });
 
       emitNewAnalysis({ id: analysisId, ...result, sourceIp: targetIp, createdAt: new Date() });
-      const stats = await db.getAnalysisStats();
+      const apiUsername = req.body.username || "api";
+      const stats = await db.getAnalysisStats(apiUsername);
       emitStatsUpdate(stats);
 
       res.json({ id: analysisId, ...result });
@@ -114,9 +126,10 @@ async function startServer() {
     }
   });
 
-  app.get("/api/status", async (_req, res) => {
+  app.get("/api/status", async (req, res) => {
     try {
-      const stats = await db.getAnalysisStats();
+      const username = (req.query.username as string) || "api";
+      const stats = await db.getAnalysisStats(username);
       res.json({ status: "online", ...stats });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -127,7 +140,8 @@ async function startServer() {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
-      const logsList = await db.getLogs(limit, offset);
+      const username = (req.query.username as string) || "api";
+      const logsList = await db.getLogs(username, limit, offset);
       res.json(logsList);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

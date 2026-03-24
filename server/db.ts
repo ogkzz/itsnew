@@ -56,7 +56,7 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// ==================== ANALYSIS QUERIES ====================
+// ==================== ANALYSIS QUERIES (filtered by username) ====================
 
 export async function createAnalysis(data: InsertAnalysis) {
   const db = await getDb();
@@ -65,16 +65,16 @@ export async function createAnalysis(data: InsertAnalysis) {
   return result[0].insertId;
 }
 
-export async function getAnalyses(limit = 50, offset = 0, statusFilter?: string) {
+export async function getAnalyses(username: string, limit = 50, offset = 0, statusFilter?: string) {
   const db = await getDb();
   if (!db) return [];
-  let query = db.select().from(analyses).orderBy(desc(analyses.createdAt)).limit(limit).offset(offset);
+  const conditions = [eq(analyses.username, username)];
   if (statusFilter && statusFilter !== "all") {
-    return db.select().from(analyses)
-      .where(eq(analyses.status, statusFilter as any))
-      .orderBy(desc(analyses.createdAt)).limit(limit).offset(offset);
+    conditions.push(eq(analyses.status, statusFilter as any));
   }
-  return query;
+  return db.select().from(analyses)
+    .where(and(...conditions))
+    .orderBy(desc(analyses.createdAt)).limit(limit).offset(offset);
 }
 
 export async function getAnalysisById(id: number) {
@@ -84,7 +84,7 @@ export async function getAnalysisById(id: number) {
   return result.length > 0 ? result[0] : null;
 }
 
-export async function getAnalysisStats() {
+export async function getAnalysisStats(username: string) {
   const db = await getDb();
   if (!db) return { total: 0, safe: 0, suspicious: 0, confirmed: 0 };
   const result = await db.select({
@@ -92,24 +92,27 @@ export async function getAnalysisStats() {
     safe: sql<number>`SUM(CASE WHEN status = 'safe' THEN 1 ELSE 0 END)`,
     suspicious: sql<number>`SUM(CASE WHEN status = 'suspicious' THEN 1 ELSE 0 END)`,
     confirmed: sql<number>`SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END)`,
-  }).from(analyses);
+  }).from(analyses).where(eq(analyses.username, username));
   return result[0] || { total: 0, safe: 0, suspicious: 0, confirmed: 0 };
 }
 
-export async function getRecentAnalyses(limit = 10) {
+export async function getRecentAnalyses(username: string, limit = 10) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(analyses).orderBy(desc(analyses.createdAt)).limit(limit);
+  return db.select().from(analyses)
+    .where(eq(analyses.username, username))
+    .orderBy(desc(analyses.createdAt)).limit(limit);
 }
 
-export async function getAnalysisCount() {
+export async function getAnalysisCount(username: string) {
   const db = await getDb();
   if (!db) return 0;
-  const result = await db.select({ count: sql<number>`COUNT(*)` }).from(analyses);
+  const result = await db.select({ count: sql<number>`COUNT(*)` }).from(analyses)
+    .where(eq(analyses.username, username));
   return result[0]?.count || 0;
 }
 
-export async function getDetectionTypeStats() {
+export async function getDetectionTypeStats(username: string) {
   const db = await getDb();
   if (!db) return [];
   const result = await db.select({
@@ -118,11 +121,11 @@ export async function getDetectionTypeStats() {
     avgFingerprint: sql<number>`AVG(fingerprintScore)`,
     avgJailbreak: sql<number>`AVG(jailbreakScore)`,
     avgManipulation: sql<number>`AVG(manipulationScore)`,
-  }).from(analyses);
+  }).from(analyses).where(eq(analyses.username, username));
   return result[0];
 }
 
-// ==================== LOG QUERIES ====================
+// ==================== LOG QUERIES (filtered by username) ====================
 
 export async function createLog(data: InsertLog) {
   const db = await getDb();
@@ -131,23 +134,21 @@ export async function createLog(data: InsertLog) {
   return result[0].insertId;
 }
 
-export async function getLogs(limit = 50, offset = 0, typeFilter?: string, levelFilter?: string) {
+export async function getLogs(username: string, limit = 50, offset = 0, typeFilter?: string, levelFilter?: string) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = [];
+  const conditions = [eq(logs.username, username)];
   if (typeFilter && typeFilter !== "all") conditions.push(eq(logs.type, typeFilter as any));
   if (levelFilter && levelFilter !== "all") conditions.push(eq(logs.level, levelFilter as any));
   
-  if (conditions.length > 0) {
-    return db.select().from(logs).where(and(...conditions)).orderBy(desc(logs.createdAt)).limit(limit).offset(offset);
-  }
-  return db.select().from(logs).orderBy(desc(logs.createdAt)).limit(limit).offset(offset);
+  return db.select().from(logs).where(and(...conditions)).orderBy(desc(logs.createdAt)).limit(limit).offset(offset);
 }
 
-export async function getLogCount() {
+export async function getLogCount(username: string) {
   const db = await getDb();
   if (!db) return 0;
-  const result = await db.select({ count: sql<number>`COUNT(*)` }).from(logs);
+  const result = await db.select({ count: sql<number>`COUNT(*)` }).from(logs)
+    .where(eq(logs.username, username));
   return result[0]?.count || 0;
 }
 
@@ -216,7 +217,7 @@ export async function getBlacklistedDomains(): Promise<string[]> {
   return result.map(r => r.domain);
 }
 
-// ==================== EXPOSED QUERIES ====================
+// ==================== EXPOSED QUERIES (public - no username filter) ====================
 
 export async function createExposed(data: InsertExposed) {
   const db = await getDb();
